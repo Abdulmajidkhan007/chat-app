@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator, useColorScheme } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 import { RootNavigator } from '@/navigation/RootNavigator';
-import { initAuthStore } from '@/stores/auth.store';
-import { initUIStore } from '@/stores/ui.store';
-import { useUIStore } from '@/stores/ui.store';
+import { initAuthStore, useAuthStore } from '@/stores/auth.store';
+import { initUIStore, useUIStore } from '@/stores/ui.store';
 import { darkTheme, lightTheme } from '@/theme';
-import { useColorScheme } from 'react-native';
+import { AuthService } from '@/services/auth.service';
 
 function AppContent(): React.JSX.Element {
   const themeMode = useUIStore((s) => s.themeMode);
@@ -48,11 +47,40 @@ export default function App(): React.JSX.Element {
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
+    let unsubscribeFirebase: (() => void) | null = null;
+
     async function bootstrap() {
+      // 1. Load cached user + theme (instant)
       await Promise.all([initAuthStore(), initUIStore()]);
+
+      // 2. Wire up Firebase auth state listener
+      //    This keeps the store in sync when the token refreshes or user signs out
+      //    from another device
+      unsubscribeFirebase = AuthService.onAuthStateChanged(
+        async (firebaseUser) => {
+          const existing = useAuthStore.getState().currentUser;
+          if (!existing || existing.id !== firebaseUser.uid) {
+            // Fetch fresh profile from Firestore
+            const profile = await AuthService.getProfile(firebaseUser.uid);
+            if (profile) {
+              useAuthStore.getState().setCurrentUser(profile);
+            }
+          }
+        },
+        () => {
+          // Firebase says signed out — clear store
+          useAuthStore.getState().logout();
+        }
+      );
+
       setIsReady(true);
     }
+
     bootstrap();
+
+    return () => {
+      unsubscribeFirebase?.();
+    };
   }, []);
 
   if (!isReady) {

@@ -45,6 +45,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   setError: (error) => set({ error }),
 }));
 
+/**
+ * Bootstrap auth state:
+ * 1. Check AsyncStorage cache (instant, for fast startup)
+ * 2. Firebase onAuthStateChanged will re-validate asynchronously
+ */
 export async function initAuthStore(): Promise<void> {
   try {
     const stored = await AsyncStorage.getItem(AUTH_USER_KEY);

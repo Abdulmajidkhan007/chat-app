@@ -20,36 +20,44 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import {
+  FirebaseRecaptchaVerifierModal,
+  type FirebaseRecaptchaVerifier,
+} from 'expo-firebase-recaptcha';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { AuthStackParamList } from '@/navigation/types';
 import { useTheme } from '@/hooks/useTheme';
+import { useAuthStore } from '@/stores/auth.store';
+import { AuthService } from '@/services/auth.service';
+import app from '@/config/firebase';
 
 type Props = StackScreenProps<AuthStackParamList, 'OTP'>;
 
-const OTP_LENGTH = 5;
-const VALID_OTP = '12345';
-const RESEND_COUNTDOWN = 30;
+const OTP_LENGTH = 6;
+const RESEND_COUNTDOWN = 60;
 
 function OTPDigitBox({
   digit,
   isFocused,
+  isVerifying,
   theme,
 }: {
   digit: string;
   isFocused: boolean;
+  isVerifying: boolean;
   theme: ReturnType<typeof useTheme>;
 }): React.JSX.Element {
   const styles = StyleSheet.create({
     box: {
-      width: 56,
-      height: 64,
+      width: 48,
+      height: 58,
       borderRadius: theme.radius.md,
       alignItems: 'center',
       justifyContent: 'center',
       borderWidth: 2,
     },
     digit: {
-      fontSize: 28,
+      fontSize: 26,
       fontWeight: theme.fontWeights.bold,
       color: theme.colors.text,
     },
@@ -61,12 +69,14 @@ function OTPDigitBox({
     ? theme.colors.surfaceElevated
     : theme.colors.border;
 
-  const backgroundColor = digit
+  const backgroundColor = isVerifying
+    ? theme.colors.surfaceElevated
+    : digit
     ? theme.colors.surfaceElevated
     : theme.colors.surface;
 
   return (
-    <View style={[styles.box, { borderColor, backgroundColor }]}>
+    <View style={[styles.box, { borderColor, backgroundColor, opacity: isVerifying ? 0.6 : 1 }]}>
       <Text style={styles.digit}>{digit}</Text>
     </View>
   );
@@ -78,6 +88,7 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
   const { phone } = route.params;
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const setCurrentUser = useAuthStore((s) => s.setCurrentUser);
 
   const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
@@ -87,11 +98,13 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
   const [countdown, setCountdown] = useState<number>(RESEND_COUNTDOWN);
   const [isResendActive, setIsResendActive] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string>('');
+  const [isResending, setIsResending] = useState<boolean>(false);
 
   const inputRefs = useRef<Array<TextInput | null>>(Array(OTP_LENGTH).fill(null));
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasVerified = useRef<boolean>(false);
+  const resendRecaptchaRef = useRef<FirebaseRecaptchaVerifier>(null);
 
   const shakeX = useSharedValue(0);
 
@@ -105,6 +118,8 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
       if (countdownRef.current) clearInterval(countdownRef.current);
       if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     };
+    // startCountdown is stable via useCallback below — intentionally run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const startCountdown = useCallback(() => {
@@ -142,6 +157,15 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
     );
   }, [shakeX]);
 
+  const resetBoxes = useCallback(() => {
+    setDigits(Array(OTP_LENGTH).fill(''));
+    setFocusedIndex(0);
+    setTimeout(() => {
+      inputRefs.current[0]?.focus();
+      hasVerified.current = false;
+    }, 100);
+  }, []);
+
   const verifyOTP = useCallback(
     async (code: string) => {
       if (hasVerified.current) return;
@@ -149,28 +173,37 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
       setIsVerifying(true);
       setErrorMessage('');
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 800));
+      const result = await AuthService.verifyOTP(code);
 
-      if (code === VALID_OTP) {
+      if (result.success) {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
         setIsVerifying(false);
         setIsSuccess(true);
+
         await new Promise<void>((resolve) => setTimeout(resolve, 600));
-        navigation.navigate('ProfileSetup', { phone });
+
+        if (result.isNewUser) {
+          navigation.navigate('ProfileSetup', { phone });
+        } else {
+          // Existing user — load their profile and hydrate the store
+          const profile = await AuthService.getProfile(result.uid);
+          if (profile) {
+            await setCurrentUser(profile);
+            // RootNavigator automatically switches to Main when isAuthenticated becomes true
+          } else {
+            // Profile missing in Firestore despite not being new — treat as new user
+            navigation.navigate('ProfileSetup', { phone });
+          }
+        }
       } else {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
         setIsVerifying(false);
-        setErrorMessage('Incorrect code. Try again.');
+        setErrorMessage(result.message ?? 'Incorrect code. Try again.');
         triggerShake();
-        setDigits(Array(OTP_LENGTH).fill(''));
-        setFocusedIndex(0);
-        setTimeout(() => {
-          inputRefs.current[0]?.focus();
-          hasVerified.current = false;
-        }, 100);
+        resetBoxes();
       }
     },
-    [navigation, phone, triggerShake]
+    [navigation, phone, triggerShake, resetBoxes, setCurrentUser]
   );
 
   const handleDigitChange = useCallback(
@@ -221,19 +254,24 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
     [digits]
   );
 
-  const handleResend = useCallback(() => {
-    if (!isResendActive) return;
+  const handleResend = useCallback(async () => {
+    if (!isResendActive || isResending) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setDigits(Array(OTP_LENGTH).fill(''));
-    setFocusedIndex(0);
+    setIsResending(true);
     setErrorMessage('');
-    hasVerified.current = false;
-    startCountdown();
-    showToast('Code sent!');
-    setTimeout(() => {
-      inputRefs.current[0]?.focus();
-    }, 100);
-  }, [isResendActive, startCountdown, showToast]);
+
+    const result = await AuthService.requestOTP(phone, resendRecaptchaRef.current);
+
+    setIsResending(false);
+
+    if (result.success) {
+      resetBoxes();
+      startCountdown();
+      showToast('Code sent!');
+    } else {
+      showToast('Failed to resend code. Try again.');
+    }
+  }, [isResendActive, isResending, phone, resetBoxes, startCountdown, showToast]);
 
   const handleBack = useCallback(() => {
     navigation.goBack();
@@ -284,7 +322,7 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
     },
     boxRow: {
       flexDirection: 'row',
-      gap: theme.spacing.md,
+      gap: theme.spacing.sm,
       marginBottom: theme.spacing.xxxl,
     },
     hiddenInputWrapper: {
@@ -303,6 +341,8 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
     resendContainer: {
       alignItems: 'center',
       marginTop: theme.spacing.xl,
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
     },
     resendCountdown: {
       fontSize: theme.fontSizes.sm,
@@ -312,9 +352,6 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
       fontSize: theme.fontSizes.sm,
       color: theme.colors.primary,
       fontWeight: theme.fontWeights.semibold,
-    },
-    resendDisabled: {
-      color: theme.colors.textTertiary,
     },
     successContainer: {
       alignItems: 'center',
@@ -359,6 +396,13 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
+      {/* Hidden reCAPTCHA modal for the resend flow */}
+      <FirebaseRecaptchaVerifierModal
+        ref={resendRecaptchaRef}
+        firebaseConfig={app.options}
+        attemptInvisibleVerification={true}
+      />
+
       <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity
@@ -384,6 +428,7 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
                 key={index}
                 digit={digit}
                 isFocused={focusedIndex === index}
+                isVerifying={isVerifying}
                 theme={theme}
               />
             ))}
@@ -403,6 +448,7 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
                 maxLength={2}
                 caretHidden
                 autoFocus={index === 0}
+                editable={!isVerifying}
                 accessibilityLabel={`OTP digit ${index + 1} of ${OTP_LENGTH}`}
               />
             </View>
@@ -430,13 +476,19 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
 
           <View style={styles.resendContainer}>
             {isResendActive ? (
-              <TouchableOpacity
-                onPress={handleResend}
-                accessibilityLabel="Resend verification code"
-                accessibilityRole="button"
-              >
-                <Text style={styles.resendLink}>Resend Code</Text>
-              </TouchableOpacity>
+              <>
+                {isResending ? (
+                  <ActivityIndicator color={theme.colors.primary} size="small" />
+                ) : (
+                  <TouchableOpacity
+                    onPress={handleResend}
+                    accessibilityLabel="Resend verification code"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.resendLink}>Resend Code</Text>
+                  </TouchableOpacity>
+                )}
+              </>
             ) : (
               <Text style={styles.resendCountdown}>
                 Resend code in {countdown}s

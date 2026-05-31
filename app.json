@@ -59,6 +59,7 @@
     },
     "plugins": [
       "expo-font",
+      "expo-firebase-recaptcha",
       [
         "expo-av",
         {

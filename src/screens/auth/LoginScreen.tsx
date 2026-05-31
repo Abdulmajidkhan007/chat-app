@@ -1,3 +1,6 @@
+// Note: Firebase Phone Auth requires a real device or Firebase Auth Emulator.
+// It will not work in Expo Go on a simulator without the Firebase Auth Emulator configured.
+
 import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
@@ -15,9 +18,15 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import {
+  FirebaseRecaptchaVerifierModal,
+  type FirebaseRecaptchaVerifier,
+} from 'expo-firebase-recaptcha';
 import type { StackScreenProps } from '@react-navigation/stack';
 import type { AuthStackParamList } from '@/navigation/types';
 import { useTheme } from '@/hooks/useTheme';
+import { AuthService } from '@/services/auth.service';
+import app from '@/config/firebase';
 
 type Props = StackScreenProps<AuthStackParamList, 'Login'>;
 
@@ -41,11 +50,15 @@ const DEFAULT_COUNTRY = COUNTRIES[0] as Country;
 export function LoginScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+
   const [selectedCountry, setSelectedCountry] = useState<Country>(DEFAULT_COUNTRY);
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [isModalVisible, setIsModalVisible] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string>('');
+
   const phoneInputRef = useRef<TextInput>(null);
+  const recaptchaVerifierRef = useRef<FirebaseRecaptchaVerifier>(null);
 
   const digitCount = phoneNumber.replace(/\D/g, '').length;
   const isNextEnabled = digitCount >= 7 && !isLoading;
@@ -73,10 +86,19 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
     if (!isNextEnabled) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsLoading(true);
+    setErrorMessage('');
+
     const fullPhone = `${selectedCountry.dialCode}${phoneNumber.trim()}`;
-    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    const result = await AuthService.requestOTP(fullPhone, recaptchaVerifierRef.current);
+
     setIsLoading(false);
-    navigation.navigate('OTP', { phone: fullPhone });
+
+    if (result.success) {
+      navigation.navigate('OTP', { phone: fullPhone });
+    } else {
+      setErrorMessage('Failed to send code. Try again.');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    }
   }, [isNextEnabled, selectedCountry, phoneNumber, navigation]);
 
   const styles = StyleSheet.create({
@@ -146,7 +168,7 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
     phoneInputContainer: {
       borderBottomWidth: 2,
       borderBottomColor: theme.colors.primary,
-      marginBottom: theme.spacing.xxxl,
+      marginBottom: theme.spacing.xxl,
     },
     phoneInput: {
       fontSize: 28,
@@ -155,6 +177,12 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
       textAlign: 'center',
       paddingVertical: theme.spacing.md,
       letterSpacing: 2,
+    },
+    errorText: {
+      fontSize: theme.fontSizes.sm,
+      color: theme.colors.error,
+      textAlign: 'center',
+      marginBottom: theme.spacing.md,
     },
     nextButton: {
       height: 56,
@@ -248,6 +276,13 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
+      {/* Invisible reCAPTCHA — only shows a challenge UI if Google requires it */}
+      <FirebaseRecaptchaVerifierModal
+        ref={recaptchaVerifierRef}
+        firebaseConfig={app.options}
+        attemptInvisibleVerification={true}
+      />
+
       <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity
@@ -290,7 +325,10 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
               ref={phoneInputRef}
               style={styles.phoneInput}
               value={phoneNumber}
-              onChangeText={setPhoneNumber}
+              onChangeText={(text) => {
+                setPhoneNumber(text);
+                if (errorMessage) setErrorMessage('');
+              }}
               placeholder="Phone number"
               placeholderTextColor={theme.colors.textTertiary}
               keyboardType="phone-pad"
@@ -301,6 +339,10 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
               maxLength={15}
             />
           </View>
+
+          {errorMessage.length > 0 && (
+            <Text style={styles.errorText}>{errorMessage}</Text>
+          )}
 
           <TouchableOpacity
             style={[
