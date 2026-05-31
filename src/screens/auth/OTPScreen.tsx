@@ -104,7 +104,7 @@ export function OTPScreen({ navigation, route }: Props): React.JSX.Element {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasVerified = useRef<boolean>(false);
-  const resendRecaptchaRef = useRef<FirebaseRecaptchaVerifier>(null);
+  const resendRecaptchaRef = useRef<FirebaseRecaptchaVerifierModal>(null);
 
   const shakeX = useSharedValue(0);
 

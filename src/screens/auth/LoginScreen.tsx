@@ -58,7 +58,7 @@ export function LoginScreen({ navigation }: Props): React.JSX.Element {
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   const phoneInputRef = useRef<TextInput>(null);
-  const recaptchaVerifierRef = useRef<FirebaseRecaptchaVerifier>(null);
+  const recaptchaVerifierRef = useRef<FirebaseRecaptchaVerifierModal>(null);
 
   const digitCount = phoneNumber.replace(/\D/g, '').length;
   const isNextEnabled = digitCount >= 7 && !isLoading;

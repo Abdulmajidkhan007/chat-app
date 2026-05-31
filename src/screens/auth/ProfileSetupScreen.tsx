@@ -20,16 +20,13 @@ import type { StackScreenProps } from '@react-navigation/stack';
 import type { AuthStackParamList } from '@/navigation/types';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/stores/auth.store';
-import type { AuthUser } from '@/stores/auth.store';
+import { AuthService } from '@/services/auth.service';
+import { firebaseAuth } from '@/config/firebase';
 
 type Props = StackScreenProps<AuthStackParamList, 'ProfileSetup'>;
 
 const USERNAME_REGEX = /^[a-zA-Z0-9_]*$/;
 const BIO_MAX_LENGTH = 70;
-
-function generateUserId(): string {
-  return `user_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
-}
 
 export function ProfileSetupScreen({ route }: Props): React.JSX.Element {
   const { phone } = route.params;
@@ -92,24 +89,19 @@ export function ProfileSetupScreen({ route }: Props): React.JSX.Element {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSubmitting(true);
 
-    const newUser: AuthUser = {
-      id: generateUserId(),
+    const uid = firebaseAuth.currentUser?.uid ?? '';
+
+    const profile = await AuthService.createProfile({
+      uid,
       phone,
       firstName: firstName.trim(),
       lastName: lastName.trim() || undefined,
       username: username.trim() || undefined,
       bio: bio.trim() || undefined,
       avatarUrl: avatarUri || undefined,
-      isVerified: false,
-    };
+    });
 
-    await setCurrentUser(newUser);
-
-    // Seed the chat store with mock data after auth is set
-    // Dynamic import prevents circular dependency
-    const { mockChats } = await import('@/data/mock');
-    const { useChatStore } = await import('@/stores/chat.store');
-    useChatStore.getState().setChats(mockChats);
+    await setCurrentUser(profile);
 
     setIsSubmitting(false);
     // RootNavigator automatically switches to Main when isAuthenticated becomes true
