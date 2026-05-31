@@ -1,0 +1,619 @@
+import React, {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  SectionList,
+  SectionListData,
+  TextInput,
+  TouchableOpacity,
+  Platform,
+  Share,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSpring,
+} from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+import { useNavigation } from '@react-navigation/native';
+import type { StackNavigationProp } from '@react-navigation/stack';
+
+import { useTheme } from '@/hooks/useTheme';
+import Avatar from '@/components/common/Avatar';
+import EmptyState from '@/components/common/EmptyState';
+import Divider from '@/components/ui/Divider';
+import { mockContactSections, mockChats } from '@/data/mock';
+import type { ContactSection } from '@/data/mock';
+import type { ChatStackParamList } from '@/navigation/types';
+import type { UserPreview } from '@/stores/chat.store';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+type NavProp = StackNavigationProp<ChatStackParamList>;
+
+// ---------------------------------------------------------------------------
+// Contact row sub-component
+// ---------------------------------------------------------------------------
+interface ContactRowProps {
+  contact: UserPreview;
+  onPress: (contact: UserPreview) => void;
+}
+
+const ContactRow = React.memo(function ContactRow({ contact, onPress }: ContactRowProps) {
+  const theme = useTheme();
+
+  const handlePress = useCallback(() => {
+    onPress(contact);
+  }, [contact, onPress]);
+
+  const fullName = `${contact.firstName}${contact.lastName ? ` ${contact.lastName}` : ''}`;
+  const statusLabel =
+    contact.status === 'online'
+      ? 'Online'
+      : contact.status === 'recently'
+      ? 'Recently'
+      : contact.username ?? '';
+
+  return (
+    <TouchableOpacity
+      onPress={handlePress}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={`Open chat with ${fullName}`}
+      style={[styles.contactRow, { paddingHorizontal: theme.spacing.lg }]}
+    >
+      <Avatar
+        uri={contact.avatarUrl}
+        name={fullName}
+        size={44}
+        showOnline
+        isOnline={contact.status === 'online'}
+      />
+      <View style={styles.contactInfo}>
+        <Text
+          style={[
+            theme.textStyles.chatName,
+            { color: theme.colors.text },
+          ]}
+          numberOfLines={1}
+        >
+          {fullName}
+          {contact.isVerified && (
+            <Text style={{ color: theme.colors.primary }}> ✓</Text>
+          )}
+        </Text>
+        {statusLabel.length > 0 && (
+          <Text
+            style={[
+              theme.textStyles.bodySmall,
+              {
+                color:
+                  contact.status === 'online'
+                    ? theme.colors.secondary
+                    : theme.colors.textSecondary,
+              },
+            ]}
+            numberOfLines={1}
+          >
+            {statusLabel}
+          </Text>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Section header sub-component
+// ---------------------------------------------------------------------------
+interface SectionHeaderProps {
+  letter: string;
+}
+
+const SectionHeader = React.memo(function SectionHeader({ letter }: SectionHeaderProps) {
+  const theme = useTheme();
+  return (
+    <View
+      style={[
+        styles.sectionHeader,
+        {
+          backgroundColor: theme.colors.background,
+          paddingHorizontal: theme.spacing.lg,
+          paddingVertical: theme.spacing.xs,
+        },
+      ]}
+    >
+      <Text
+        style={[
+          theme.textStyles.bodySmall,
+          {
+            color: theme.colors.primary,
+            fontWeight: theme.fontWeights.semibold,
+          },
+        ]}
+      >
+        {letter}
+      </Text>
+    </View>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Section index strip
+// ---------------------------------------------------------------------------
+interface SectionIndexProps {
+  letters: string[];
+  onLetterPress: (letter: string) => void;
+}
+
+const SectionIndex = React.memo(function SectionIndex({
+  letters,
+  onLetterPress,
+}: SectionIndexProps) {
+  const theme = useTheme();
+  return (
+    <View style={styles.sectionIndex} pointerEvents="box-none">
+      {letters.map((letter) => (
+        <TouchableOpacity
+          key={letter}
+          onPress={() => {
+            Haptics.selectionAsync();
+            onLetterPress(letter);
+          }}
+          hitSlop={{ top: 2, bottom: 2, left: 6, right: 6 }}
+          accessibilityRole="button"
+          accessibilityLabel={`Jump to ${letter}`}
+        >
+          <Text
+            style={[
+              theme.textStyles.caption,
+              {
+                color: theme.colors.primary,
+                fontWeight: theme.fontWeights.semibold,
+                lineHeight: 16,
+              },
+            ]}
+          >
+            {letter}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Main screen
+// ---------------------------------------------------------------------------
+export function ContactsScreen(): React.JSX.Element {
+  const theme = useTheme();
+  const navigation = useNavigation<NavProp>();
+
+  const sectionListRef = useRef<SectionList<UserPreview, ContactSection>>(null);
+  const searchInputRef = useRef<TextInput>(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchVisible, setIsSearchVisible] = useState(false);
+
+  const searchBarHeight = useSharedValue(0);
+  const searchBarOpacity = useSharedValue(0);
+
+  // ---------------------------------------------------------------------------
+  // Search toggle
+  // ---------------------------------------------------------------------------
+  const toggleSearch = useCallback(() => {
+    const willOpen = !isSearchVisible;
+    if (willOpen) {
+      setIsSearchVisible(true);
+      searchBarHeight.value = withSpring(52, { damping: 18, stiffness: 200 });
+      searchBarOpacity.value = withTiming(1, { duration: 200 });
+      setTimeout(() => searchInputRef.current?.focus(), 250);
+    } else {
+      searchBarOpacity.value = withTiming(0, { duration: 150 });
+      searchBarHeight.value = withTiming(0, { duration: 200 });
+      setTimeout(() => {
+        setIsSearchVisible(false);
+        setSearchQuery('');
+      }, 210);
+    }
+  }, [isSearchVisible, searchBarHeight, searchBarOpacity]);
+
+  const animatedSearchBar = useAnimatedStyle(() => ({
+    height: searchBarHeight.value,
+    opacity: searchBarOpacity.value,
+    overflow: 'hidden',
+  }));
+
+  // ---------------------------------------------------------------------------
+  // Filtered sections
+  // ---------------------------------------------------------------------------
+  const filteredSections = useMemo<ContactSection[]>(() => {
+    if (searchQuery.trim().length === 0) return mockContactSections;
+    const q = searchQuery.toLowerCase();
+    return mockContactSections
+      .map((section) => ({
+        ...section,
+        data: section.data.filter((c) => {
+          const fullName = `${c.firstName}${c.lastName ? ` ${c.lastName}` : ''}`.toLowerCase();
+          return fullName.includes(q) || (c.username ?? '').toLowerCase().includes(q);
+        }),
+      }))
+      .filter((s) => s.data.length > 0);
+  }, [searchQuery]);
+
+  const allLetters = useMemo(
+    () => mockContactSections.map((s) => s.letter),
+    [],
+  );
+
+  // ---------------------------------------------------------------------------
+  // Navigation
+  // ---------------------------------------------------------------------------
+  const handleContactPress = useCallback(
+    (contact: UserPreview) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const existingChat = mockChats.find(
+        (c) => c.type === 'private' && c.otherUser?.id === contact.id,
+      );
+      if (existingChat) {
+        navigation.navigate('ChatDetail', {
+          chatId: existingChat.id,
+          chatType: existingChat.type,
+          title: existingChat.name,
+          avatarUrl: existingChat.avatarUrl,
+        });
+      }
+    },
+    [navigation],
+  );
+
+  const handleLetterPress = useCallback(
+    (letter: string) => {
+      const sectionIndex = filteredSections.findIndex((s) => s.letter === letter);
+      if (sectionIndex >= 0) {
+        sectionListRef.current?.scrollToLocation({
+          sectionIndex,
+          itemIndex: 0,
+          animated: true,
+          viewOffset: 0,
+        });
+      }
+    },
+    [filteredSections],
+  );
+
+  const handleInviteFriends = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await Share.share({
+        message: 'Join me on Pulse Messenger! Download it at https://pulse.app',
+        title: 'Invite to Pulse Messenger',
+      });
+    } catch {
+      // Share dismissed
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Render helpers
+  // ---------------------------------------------------------------------------
+  const renderItem = useCallback(
+    ({ item }: { item: UserPreview }) => (
+      <ContactRow contact={item} onPress={handleContactPress} />
+    ),
+    [handleContactPress],
+  );
+
+  const renderSectionHeader = useCallback(
+    ({ section }: { section: SectionListData<UserPreview, ContactSection> }) => (
+      <SectionHeader letter={section.letter} />
+    ),
+    [],
+  );
+
+  const renderItemSeparator = useCallback(() => <Divider inset={72} />, []);
+
+  const renderFooter = useCallback(
+    () => (
+      <TouchableOpacity
+        onPress={handleInviteFriends}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="Invite Friends"
+        style={[
+          styles.inviteRow,
+          {
+            paddingHorizontal: theme.spacing.lg,
+            paddingVertical: theme.spacing.md,
+            marginTop: theme.spacing.lg,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.inviteIconContainer,
+            {
+              backgroundColor: theme.colors.primary,
+              borderRadius: theme.radius.full,
+              width: 44,
+              height: 44,
+            },
+          ]}
+        >
+          <Ionicons name="share-social-outline" size={20} color="#FFFFFF" />
+        </View>
+        <View style={styles.inviteText}>
+          <Text
+            style={[
+              theme.textStyles.chatName,
+              { color: theme.colors.text },
+            ]}
+          >
+            Invite Friends
+          </Text>
+          <Text
+            style={[
+              theme.textStyles.bodySmall,
+              { color: theme.colors.textSecondary },
+            ]}
+          >
+            Share Pulse with your contacts
+          </Text>
+        </View>
+        <Ionicons
+          name="chevron-forward"
+          size={18}
+          color={theme.colors.textTertiary}
+        />
+      </TouchableOpacity>
+    ),
+    [theme, handleInviteFriends],
+  );
+
+  const hasNoResults =
+    searchQuery.trim().length > 0 && filteredSections.length === 0;
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  return (
+    <SafeAreaView
+      style={[styles.root, { backgroundColor: theme.colors.background }]}
+      edges={['top']}
+    >
+      {/* Header */}
+      <View
+        style={[
+          styles.header,
+          {
+            paddingHorizontal: theme.spacing.lg,
+            paddingVertical: theme.spacing.md,
+            borderBottomColor: theme.colors.borderSubtle,
+          },
+        ]}
+      >
+        <Text
+          style={[theme.textStyles.headingLarge, { color: theme.colors.text }]}
+          accessibilityRole="header"
+        >
+          Contacts
+        </Text>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            onPress={toggleSearch}
+            style={styles.headerIcon}
+            accessibilityRole="button"
+            accessibilityLabel={isSearchVisible ? 'Close search' : 'Search contacts'}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={isSearchVisible ? 'close-outline' : 'search-outline'}
+              size={24}
+              color={theme.colors.primary}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+            style={[styles.headerIcon, { marginLeft: theme.spacing.xs }]}
+            accessibilityRole="button"
+            accessibilityLabel="Add contact"
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name="person-add-outline"
+              size={24}
+              color={theme.colors.primary}
+            />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Collapsible search bar */}
+      <Animated.View style={animatedSearchBar}>
+        <View
+          style={[
+            styles.searchBarWrapper,
+            {
+              paddingHorizontal: theme.spacing.lg,
+              paddingBottom: theme.spacing.sm,
+              backgroundColor: theme.colors.background,
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.searchBar,
+              {
+                backgroundColor: theme.colors.surfaceElevated,
+                borderRadius: theme.radius.lg,
+                paddingHorizontal: theme.spacing.md,
+              },
+            ]}
+          >
+            <Ionicons
+              name="search-outline"
+              size={16}
+              color={theme.colors.textTertiary}
+              style={{ marginRight: theme.spacing.xs }}
+            />
+            <TextInput
+              ref={searchInputRef}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search contacts..."
+              placeholderTextColor={theme.colors.textTertiary}
+              style={[
+                styles.searchInput,
+                {
+                  color: theme.colors.text,
+                  fontSize: theme.fontSizes.md,
+                },
+              ]}
+              returnKeyType="search"
+              autoCorrect={false}
+              autoCapitalize="none"
+              accessibilityLabel="Search contacts"
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setSearchQuery('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons
+                  name="close-circle"
+                  size={16}
+                  color={theme.colors.textTertiary}
+                />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Animated.View>
+
+      {/* Content */}
+      <View style={styles.listContainer}>
+        {hasNoResults ? (
+          <View style={styles.emptyWrapper}>
+            <EmptyState
+              icon="👤"
+              title="No Contacts Found"
+              subtitle={`No contacts match "${searchQuery}".`}
+            />
+          </View>
+        ) : (
+          <SectionList<UserPreview, ContactSection>
+            ref={sectionListRef}
+            sections={filteredSections}
+            keyExtractor={(item) => item.id}
+            renderItem={renderItem}
+            renderSectionHeader={renderSectionHeader}
+            ItemSeparatorComponent={renderItemSeparator}
+            ListFooterComponent={renderFooter}
+            stickySectionHeadersEnabled
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: 100 }}
+            keyboardShouldPersistTaps="handled"
+            onScrollToIndexFailed={() => {}}
+          />
+        )}
+
+        {/* Section index strip */}
+        {!hasNoResults && searchQuery.trim().length === 0 && (
+          <SectionIndex letters={allLetters} onLetterPress={handleLetterPress} />
+        )}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerIcon: {
+    padding: 4,
+  },
+  searchBarWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchBar: {
+    flex: 1,
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchInput: {
+    flex: 1,
+    height: '100%',
+    ...(Platform.OS === 'web' ? { outline: 'none' } as object : {}),
+  },
+  listContainer: {
+    flex: 1,
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    gap: 12,
+  },
+  contactInfo: {
+    flex: 1,
+  },
+  sectionHeader: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sectionIndex: {
+    position: 'absolute',
+    right: 4,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 8,
+    gap: 2,
+  },
+  inviteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  inviteIconContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inviteText: {
+    flex: 1,
+  },
+  emptyWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+});
