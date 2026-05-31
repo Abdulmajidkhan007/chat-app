@@ -6,3 +6,13 @@ build/
 .env
 .env.*
 .DS_Store
+
+# Firebase / Google services (contain secrets)
+google-services.json
+google-service-account.json
+GoogleService-Info.plist
+
+# EAS local artifacts
+*.ipa
+*.apk
+*.aab
