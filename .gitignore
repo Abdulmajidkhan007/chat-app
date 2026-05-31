@@ -4,7 +4,10 @@ dist/
 build/
 *.log
 .env
-.env.*
+.env.local
+.env.*.local
+# keep .env.example tracked (no secrets, just template)
+!.env.example
 .DS_Store
 
 # Firebase / Google services (contain secrets)
